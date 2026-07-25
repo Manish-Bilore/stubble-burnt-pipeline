@@ -1,0 +1,8 @@
+UP Rabi 2026 — status as of 2026-07-25
+- CSV: 75 districts, 70 populated, in GCS. 
+- Total 7.69 Mha = HARVEST-INFLATED detection, NOT burnt area (over-detection, v7 char gate needed).
+- 5 districts show 0 despite tiles present in interim/dnbr (43RGP/43RGN/43RFP/43RGM/44RKP/44RKQ exist):
+  AURAIYA, BAREILLY, FARRUKHABAD, RAMPUR, SHAHJAHANPUR
+  -> NOT a data gap. Mosaic-clip returns valid_px=0 over their footprints. 
+  -> Investigate: projection/extent mismatch or mosaic-date coverage. Fresh session.
+- BASTI recovered (187k ha). SAHARANPUR edge-sliver only (0.96 ha).

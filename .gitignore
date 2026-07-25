@@ -1,0 +1,14 @@
+data/interim/
+data/outputs/
+data/raw/
+data/tmp/
+*.tif
+*.tiff
+*.duckdb
+*.gpkg
+credentials/
+*.bak_*
+*.log
+__pycache__/
+.Rhistory
+*.bak*
