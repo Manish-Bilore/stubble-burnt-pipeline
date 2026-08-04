@@ -35,13 +35,38 @@ suppressPackageStartupMessages({
 # ── Mosaic helpers ────────────────────────────────────────────────────────────
 
 #' Mosaic all tile dNBR GeoTIFFs for a single date into one SpatRaster.
-mosaic_date_tiles <- function(dnbr_dir, date_str, run_tag) {
+mosaic_date_tiles <- function(dnbr_dir, date_str, run_tag,
+                              target_crs = CFG$target_crs) {
   files <- list.files(dnbr_dir,
     pattern = glue("^{run_tag}_{date_str}_[A-Z0-9]+_dnbr\\.tif$"),
     full.names = TRUE)
   if (length(files) == 0) return(NULL)
-  if (length(files) == 1) return(rast(files))
-  rlist <- lapply(files, rast)
+
+  # Tiles are written in their native MGRS UTM zone (43N/44N/45N for UP).
+  # terra::mosaic() requires identical CRS - mixed input silently drops
+  # tiles outside the first raster's zone, yielding valid_px = 0 on clip.
+  # Reproject off-zone tiles onto the grid of an in-zone reference tile, so
+  # CRS, resolution AND origin all match. project(r, crs) alone picks its own
+  # output resolution, which then fails mosaic()'s resolution check.
+  crs_ok <- vapply(files, function(p) same.crs(rast(p), target_crs), logical(1))
+  if (!any(crs_ok)) {
+    ref <- project(rast(files[1]), target_crs, method = "bilinear")
+    res(ref) <- CFG$native_res_m
+  } else {
+    ref <- rast(files[which(crs_ok)[1]])
+  }
+
+  rlist <- lapply(files, function(p) {
+    r <- rast(p)
+    if (!same.crs(r, target_crs)) {
+      tmpl <- project(rast(r), target_crs)      # empty grid, correct extent
+      res(tmpl) <- res(ref)
+      origin(tmpl) <- origin(ref)
+      r <- project(r, tmpl, method = "bilinear")
+    }
+    r
+  })
+  if (length(rlist) == 1) return(rlist[[1]])
   do.call(mosaic, c(rlist, list(fun = "mean")))
 }
 
