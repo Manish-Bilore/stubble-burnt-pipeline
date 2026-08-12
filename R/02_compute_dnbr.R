@@ -48,7 +48,7 @@ stac_search_window <- function(bbox, date_start, date_end, source, token = NULL,
       stac_search_window_inner(bbox, date_start, date_end, source, token),
       error = function(e) {
         last_err <<- e
-        if (grepl("429", e$message) && attempt < retries) {
+        if (grepl("429", paste(e$message, collapse=" ")) && attempt < retries) {
           wait <- 30 * attempt
           message("  [STAC 429] Rate limited. Waiting ", wait, "s before retry ", attempt+1, "/", retries)
           Sys.sleep(wait)
@@ -71,7 +71,8 @@ stac_search_window_inner <- function(bbox, date_start, date_end, source, token =
     all_items <- stac(CFG$mpc_stac_url) |>
       stac_search(collections = CFG$mpc_collection, bbox = bbox,
                   datetime = dt_range, limit = 500) |>
-      post_request()
+      post_request() |>
+      items_fetch(progress = FALSE)
     items <- all_items
     items$features <- Filter(function(f) {
       cc <- f$properties[["eo:cloud_cover"]]
@@ -83,7 +84,8 @@ stac_search_window_inner <- function(bbox, date_start, date_end, source, token =
                   datetime = dt_range, limit = 500) |>
       ext_filter(`eo:cloud_cover` <= max_cloud &
                  `s2:processing_baseline` >= "05.00") |>
-      get_request()
+      get_request() |>
+      items_fetch(progress = FALSE)
   }
   items$features
 }
