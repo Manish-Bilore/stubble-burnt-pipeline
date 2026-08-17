@@ -316,9 +316,13 @@ process_tile <- function(tile_id, baseline_items, postfire_items,
     library(terra); library(rstac); library(sf)
     library(lubridate); library(glue); library(logger); library(fs)
   })
-  terraOptions(memmax = CFG$terra_mem_gb, tempdir = file.path(
-    Sys.getenv("PIPELINE_ROOT"), CFG$dir_tmp), todisk = CFG$terra_todisk,
-    progress = 0)
+  .wtmp <- file.path(Sys.getenv("PIPELINE_ROOT"), CFG$dir_tmp,
+                     paste0("worker_", Sys.getpid()))
+  dir.create(.wtmp, showWarnings = FALSE, recursive = TRUE)
+  terraOptions(memmax = CFG$terra_mem_gb, tempdir = .wtmp,
+    todisk = CFG$terra_todisk, progress = 0)
+  on.exit(try(terra::tmpFiles(current = TRUE, remove = TRUE), silent = TRUE),
+          add = TRUE)
 
   # FIX B3: each worker fetches its own CDSE token from the cached helper.
   # Caches with 60s safety margin; refreshes itself when near expiry.
