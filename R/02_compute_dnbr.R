@@ -443,20 +443,14 @@ run_compute_dnbr <- function(root_dir, cfg = NULL) {
       m
     })
     # Deduplicate: keep lowest cloud per (tile, date)
-    meta_df <- bind_rows(lapply(meta, function(m) {
-      data.frame(tile_id=m$tile_id, date=m$date, cloud=m$cloud, idx=1, stringsAsFactors=FALSE)
+    meta_df <- bind_rows(lapply(seq_along(meta), function(i) {
+      m <- meta[[i]]
+      data.frame(tile_id = m$tile_id, date = as.character(m$date),
+                 cloud = m$cloud, idx = i, stringsAsFactors = FALSE)
     }))
     meta_df <- meta_df[order(meta_df$tile_id, meta_df$date, meta_df$cloud), ]
-    meta_df <- meta_df[!duplicated(meta_df[,c("tile_id","date")]), ]
-
-    grouped <- split(
-      lapply(seq_len(nrow(meta_df)), function(i) {
-        orig <- meta[[which(sapply(meta, function(m) m$tile_id == meta_df$tile_id[i] &
-                                                       m$date == meta_df$date[i]))[[1]]]]
-        orig
-      }),
-      meta_df$tile_id
-    )
+    meta_df <- meta_df[!duplicated(meta_df[, c("tile_id","date")]), ]
+    grouped <- split(meta[meta_df$idx], meta_df$tile_id)
     grouped
   }
 
