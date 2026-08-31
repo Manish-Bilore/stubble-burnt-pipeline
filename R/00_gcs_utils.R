@@ -140,8 +140,8 @@ stubble_gcs_path <- list(
     paste0("outputs/", run_tag, "/csv/", filename)
   },
 
-  gfsad = function(state_code) {
-    paste0("data/gfsad/", state_code, "_gfsad30_20m.tif")
+  cropland_mask = function(state_code) {
+    paste0("data/cropland_mask/", state_code, "_cropland_20m.tif")
   }
 )
 

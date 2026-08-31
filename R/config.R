@@ -110,9 +110,14 @@ build_config <- function(
     severity_breaks = c(0.00, 0.10, 0.27, 0.44, 0.66, 2.00),
     severity_labels = c("Unburned", "Low", "Moderate-Low", "Moderate-High", "High"),
 
-    # GFSAD
-    gfsad_product   = "GFSAD30SAAFGIRCE",
-    gfsad_crop_vals = c(2L),
+    # cropland mask — ESA WorldCover v200 (replaced GFSAD30, see 01_build_cropland_mask.R)
+    wc_base_url       = "https://esa-worldcover.s3.eu-central-1.amazonaws.com/v200/2021/map",
+    wc_version        = "v200",
+    wc_year           = 2021L,
+    wc_crop_class     = 40L,      # 40 = Cropland. Grassland (30) excluded.
+    wc_tile_deg       = 3L,
+    cropland_resample = "near",   # "near" | "fraction"
+    wc_min_fraction   = 0.5,      # used only when cropland_resample = "fraction"
 
     # spatial
     target_crs      = state_info$utm_crs,
@@ -133,7 +138,7 @@ build_config <- function(
     gcs_prefix      = "pipeline",
 
     # paths
-    dir_raw_gfsad   = "data/raw/gfsad",
+    dir_cropland_mask = "data/raw/cropland_mask",
     dir_dnbr        = "data/interim/dnbr",
     dir_baselines   = "data/interim/baselines",
     dir_out_tif     = "data/outputs/geotiff",

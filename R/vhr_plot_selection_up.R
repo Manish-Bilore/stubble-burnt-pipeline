@@ -9,7 +9,7 @@
 ## INPUTS
 ##   AOI_selection/outputs/vhr_selected_scenes.gpkg   (from vhr_aoi_selection_up.R)
 ##   data/from_gcs/pipeline/<RUN_TAG>/dnbr/*.tif      (per-tile, per-date dNBR)
-##   data/from_gcs/pipeline/<RUN_TAG>/gfsad/*.tif     (cropland mask)
+##   data/from_gcs/pipeline/<RUN_TAG>/cropland_mask/*.tif  (cropland mask)
 ##
 ## IMPORTANT - WHICH BURN MASK
 ##   There are no v7 results yet; the char-confirmation gate is still in
@@ -47,7 +47,7 @@ RUN_TAG  <- "uttar_pradesh_rabi_2026_20260301_to_20260630"
 RUN_DIR  <- file.path(ROOT, "data/from_gcs/pipeline", RUN_TAG)
 
 DNBR_DIR  <- file.path(RUN_DIR, "dnbr")
-GFSAD_TIF <- file.path(RUN_DIR, "gfsad", paste0(RUN_TAG, "_gfsad30_20m.tif"))
+CROPMASK_TIF <- file.path(RUN_DIR, "cropland_mask", paste0(RUN_TAG, "_cropland_20m.tif"))
 SEL_GPKG  <- file.path(ROOT, "AOI_selection/outputs/vhr_selected_scenes.gpkg")
 BRACKET   <- file.path(ROOT, "AOI_selection/outputs/vhr_tile_bracket.csv")
 
@@ -109,8 +109,8 @@ dnbr_meta <- tibble(
          obs_date = as.Date(str_match(fname, "_([0-9]{8})_[0-9]{2}[A-Z]{3}_dnbr")[, 2], "%Y%m%d"),
          tile     = str_match(fname, "_([0-9]{2}[A-Z]{3})_dnbr\\.tif$")[, 2])
 
-gf <- if (file.exists(GFSAD_TIF)) rast(GFSAD_TIF) else
-        stop("GFSAD mask not found: ", GFSAD_TIF)
+gf <- if (file.exists(CROPMASK_TIF)) rast(CROPMASK_TIF) else
+        stop("Cropland mask not found: ", CROPMASK_TIF)
 
 cat("== inputs ==\n")
 cat("  scenes:", nrow(sel), " dNBR files:", nrow(dnbr_meta), "\n")

@@ -138,7 +138,7 @@ CFG <- build_config(
 )
 
 # ── Create required directories ──────────────────────────────────────────────
-for (d in c(CFG$dir_logs, CFG$dir_tmp, CFG$dir_raw_gfsad,
+for (d in c(CFG$dir_logs, CFG$dir_tmp, CFG$dir_cropland_mask,
             CFG$dir_dnbr, CFG$dir_baselines,
             CFG$dir_out_tif, CFG$dir_out_csv)) {
   dir.create(file.path(ROOT, d), recursive = TRUE, showWarnings = FALSE)
@@ -158,9 +158,9 @@ log_info("========================================")
 # ── Step registry ────────────────────────────────────────────────────────────
 step_defs <- list(
   "01" = list(
-    script = "R/01_download_gfsad.R",
-    fn     = "run_step_01",
-    label  = "Download GFSAD30 cropland mask"
+    script = "R/01_build_cropland_mask.R",
+    fn     = "run_build_cropland_mask",
+    label  = "Build ESA WorldCover cropland mask"
   ),
   "02" = list(
     script = "R/02_compute_dnbr.R",

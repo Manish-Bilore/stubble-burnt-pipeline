@@ -51,7 +51,7 @@ RUN_TAG  <- "uttar_pradesh_rabi_2026_20260301_to_20260630"
 RUN_DIR  <- file.path(ROOT, "data/from_gcs/pipeline", RUN_TAG)
 
 DNBR_DIR   <- file.path(RUN_DIR, "dnbr")
-GFSAD_TIF  <- file.path(RUN_DIR, "gfsad", paste0(RUN_TAG, "_gfsad30_20m.tif"))
+CROPMASK_TIF  <- file.path(RUN_DIR, "cropland_mask", paste0(RUN_TAG, "_cropland_20m.tif"))
 GEOTIFF_DIR<- file.path(ROOT, "data/outputs/geotiff")     # cumulative products
 CSV_DIR    <- file.path(ROOT, "data/outputs/csv")
 GPKG_ADMIN <- file.path(ROOT, "gpkg", "uttar_pradesh_admin_with_divisions.gpkg")

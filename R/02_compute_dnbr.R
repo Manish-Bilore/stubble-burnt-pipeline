@@ -2,7 +2,8 @@
 # 02_compute_dnbr.R
 # Stream Sentinel-2 COGs directly from STAC via /vsicurl/ HTTP range requests.
 # No full-tile downloads. Clips to AOI bbox before loading pixels.
-# Computes dNBR AND applies GFSAD crop mask in a single raster pass per tile/date.
+# Computes dNBR AND applies the WorldCover crop mask in a single raster pass
+# per tile/date.
 # Runs in parallel across MGRS tiles using furrr.
 # =============================================================================
 # v5 changes vs v4:
@@ -221,7 +222,7 @@ build_tile_baseline <- function(tile_items, n_img, clip_bbox_utm, target_crs,
 
 # ── Per-date dNBR + mask (single pass) ───────────────────────────────────────
 
-#' Stream one post-fire S2 acquisition, compute dNBR, apply GFSAD mask,
+#' Stream one post-fire S2 acquisition, compute dNBR, apply cropland mask,
 #' classify severity — all in a single raster pass before writing to disk.
 process_postfire_date <- function(item, baseline_path, mask_path,
                                    clip_bbox_utm, target_crs, out_dir,
@@ -278,7 +279,7 @@ process_postfire_date <- function(item, baseline_path, mask_path,
   dnbr     <- baseline - nbr_post
   severity <- classify_severity(dnbr)
 
-  # ── Apply GFSAD crop mask in same pass ──────────────────────────────────────
+  # ── Apply cropland mask in same pass ───────────────────────────────────────
   crop_mask <- rast(mask_path)
   if (!compareGeom(crop_mask, dnbr, stopOnError = FALSE))
     crop_mask <- resample(crop_mask, dnbr, method = "near")
@@ -405,10 +406,10 @@ run_compute_dnbr <- function(root_dir, cfg = NULL) {
   log_threshold(INFO)
   log_info("=== Step 02: Stream S2 + compute dNBR (parallel) | {CFG$run_id} ===")
 
-  mask_path <- file.path(root_dir, CFG$dir_raw_gfsad,
-                         paste0(CFG$run_tag, "_gfsad30_20m.tif"))
+  mask_path <- file.path(root_dir, CFG$dir_cropland_mask,
+                         paste0(CFG$run_tag, "_cropland_20m.tif"))
   if (!file.exists(mask_path))
-    stop("GFSAD mask not found: ", mask_path, ". Run Step 01 first.")
+    stop("Cropland mask not found: ", mask_path, ". Run Step 01 first.")
 
   # FIX A5: dead `aoi_sf <- NULL` conditional removed. Load directly.
   shp_path <- file.path(root_dir, CFG$shapefile_path, CFG$gpkg_file)

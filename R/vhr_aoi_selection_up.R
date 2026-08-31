@@ -40,7 +40,7 @@ RUN_DIR   <- file.path(ROOT, "data/from_gcs/pipeline", RUN_TAG)
 
 DNBR_DIR  <- file.path(RUN_DIR, "dnbr")
 BASE_DIR  <- file.path(RUN_DIR, "baselines")
-GFSAD_TIF <- file.path(RUN_DIR, "gfsad", paste0(RUN_TAG, "_gfsad30_20m.tif"))
+CROPMASK_TIF <- file.path(RUN_DIR, "cropland_mask", paste0(RUN_TAG, "_cropland_20m.tif"))
 
 GPKG_ADMIN <- file.path(ROOT, "gpkg", "uttar_pradesh_admin_with_divisions.gpkg")
 
@@ -231,16 +231,16 @@ prelim <- bracket |>
 cand <- head(prelim$scene_id, N_SAMPLE_SCENES)
 cat("\n== sampling rasters for", length(cand), "candidate scenes ==\n")
 
-## 8a. cropland fraction from the run's own GFSAD mask, so the number
+## 8a. cropland fraction from the run's own WorldCover mask, so the number
 ## refers to the same denominator the pipeline used.
 crop_frac <- tibble(scene_id = character(), cropland_frac = numeric())
-if (file.exists(GFSAD_TIF)) {
-  gf <- rast(GFSAD_TIF)
+if (file.exists(CROPMASK_TIF)) {
+  gf <- rast(CROPMASK_TIF)
   gv <- vect(st_transform(filter(vhr, scene_id %in% cand), crs(gf)))
   cf <- terra::extract(gf[[1]], gv, fun = function(x) mean(x == 1, na.rm = TRUE))
   crop_frac <- tibble(scene_id = gv$scene_id, cropland_frac = round(cf[[2]], 3))
 } else {
-  message("GFSAD mask not found - skipping cropland fraction.")
+  message("Cropland mask not found - skipping cropland fraction.")
 }
 
 ## 8b. flagged-burn fraction on the bracketing post date.
