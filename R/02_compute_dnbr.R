@@ -21,6 +21,8 @@
 #     Band 2: severity class (0–4, uint8)
 # =============================================================================
 
+`%||%` <- function(a, b) if (is.null(a)) b else a
+
 suppressPackageStartupMessages({
   library(rstac)
   library(httr2)
@@ -81,8 +83,11 @@ stac_search_window_inner <- function(bbox, date_start, date_end, source, token =
     }, all_items$features)
   } else {
     items <- stac(CFG$cdse_stac_url) |>
+      # CDSE caps sentinel-2-l2a at 200 per page unless the `fields`
+      # extension is used; 500 returns HTTP 400 LimitValidationError.
+      # items_fetch() paginates, so this only sets page size.
       stac_search(collections = CFG$cdse_collection, bbox = bbox,
-                  datetime = dt_range, limit = 500) |>
+                  datetime = dt_range, limit = 100) |>
       ext_filter(`eo:cloud_cover` <= max_cloud &
                  `s2:processing_baseline` >= "05.00") |>
       get_request() |>
@@ -115,30 +120,61 @@ sign_item <- function(item, source) {
 
 # ── Streaming raster loader ───────────────────────────────────────────────────
 
-#' Load a single band from a COG URL, clipped to the AOI bbox window.
+#' Load a single band from a COG URL, clipped to the AOI.
 #' Uses /vsicurl/ — GDAL only fetches the required HTTP byte ranges.
-stream_band_clipped <- function(url, clip_bbox_utm, target_crs,
-                                 scale = 1e-4, bearer_token = NULL) {
+#'
+#' FIX 2026-09: the clip window is now derived from the AOI polygon in
+#' EPSG:4326 and projected into THIS raster's native CRS. Previously a single
+#' bounding box was computed once in CFG$target_crs (UTM 44N for UP) and
+#' reused for every tile. A rectangle in 44N is not a rectangle in 43N: 4
+#' degrees west of the 44N central meridian the edges bow inward by
+#' kilometres, so western tiles were cropped to a sliver. 43RFP came out
+#' 779 columns wide instead of 5490 — a 15.6 km strip of a 110 km tile.
+#' Projecting the real polygon (many vertices) instead of 4 bbox corners
+#' also removes the corner-only densification error.
+stream_band_clipped <- function(url, clip_aoi_wkt, target_crs = NULL,
+                                 scale = 1e-4, bearer_token = NULL,
+                                 tile_id = NA_character_) {
   if (!is.null(bearer_token))
     Sys.setenv(GDAL_HTTP_HEADERS = paste0("Authorization: Bearer ", bearer_token))
 
   r <- tryCatch(
     rast(paste0("/vsicurl/", url)),
-    error = function(e) { message("  [stream fail] ", url, ": ", e$message); NULL }
+    error = function(e) {
+      log_warn("  [stream fail] tile {tile_id}: {basename(url)}: {e$message}")
+      NULL
+    }
   )
   if (is.null(r)) return(NULL)
 
-  # Reproject clip bbox to raster's native CRS (S2 tiles are in their UTM zone)
-  clip_vect      <- vect(st_as_sf(st_sfc(
-    st_as_sfc(st_bbox(clip_bbox_utm)), crs = target_crs
-  )))
-  clip_native    <- project(clip_vect, crs(r))
+  clip_native <- tryCatch(
+    project(vect(clip_aoi_wkt, crs = "EPSG:4326"), crs(r)),
+    error = function(e) {
+      log_warn("  [clip project fail] tile {tile_id}: {e$message}")
+      NULL
+    }
+  )
+  if (is.null(clip_native)) return(NULL)
+
+  # A tile that does not actually intersect the AOI is a caller error, not a
+  # data problem — surface it rather than returning an empty raster.
+  if (is.null(intersect(ext(r), ext(clip_native)))) {
+    log_warn("  [no AOI overlap] tile {tile_id}: {basename(url)}")
+    return(NULL)
+  }
 
   r_clip <- tryCatch(
     crop(r, clip_native),
-    error = function(e) { message("  [crop fail] ", e$message); NULL }
+    error = function(e) {
+      log_warn("  [crop fail] tile {tile_id}: {e$message}")
+      NULL
+    }
   )
   if (is.null(r_clip)) return(NULL)
+  if (ncell(r_clip) == 0) {
+    log_warn("  [empty crop] tile {tile_id}: {basename(url)}")
+    return(NULL)
+  }
 
   if (scale != 1) r_clip <- r_clip * scale
   r_clip
@@ -168,7 +204,7 @@ valid_frac_from_scl <- function(scl_r) {
 
 #' Build median-composite baseline NBR from the N best (least-cloudy) baseline
 #' acquisitions for a given MGRS tile, streaming directly from STAC.
-build_tile_baseline <- function(tile_items, n_img, clip_bbox_utm, target_crs,
+build_tile_baseline <- function(tile_items, n_img, clip_aoi_wkt, target_crs,
                                  token, baseline_dir, run_tag, tile_id) {
   out_path <- file.path(baseline_dir, glue("{run_tag}_{tile_id}_baseline.tif"))
   if (file.exists(out_path)) {
@@ -185,12 +221,12 @@ build_tile_baseline <- function(tile_items, n_img, clip_bbox_utm, target_crs,
   nbr_layers <- lapply(best, function(it) {
     raw_it <- sign_item(it$item, CFG$stac_source)
     b8a <- stream_band_clipped(get_asset_url(raw_it, "B8A", CFG$stac_source),
-                                clip_bbox_utm, target_crs, bearer_token = token)
+                                clip_aoi_wkt, bearer_token = token, tile_id = tile_id)
     b12 <- stream_band_clipped(get_asset_url(raw_it, "B12", CFG$stac_source),
-                                clip_bbox_utm, target_crs, bearer_token = token)
+                                clip_aoi_wkt, bearer_token = token, tile_id = tile_id)
     scl <- stream_band_clipped(get_asset_url(raw_it, "SCL", CFG$stac_source),
-                                clip_bbox_utm, target_crs,
-                                scale = 1, bearer_token = token)
+                                clip_aoi_wkt, scale = 1,
+                                bearer_token = token, tile_id = tile_id)
     if (is.null(b8a) || is.null(b12) || is.null(scl)) return(NULL)
 
     # Align to same extent/res before combining
@@ -220,12 +256,73 @@ build_tile_baseline <- function(tile_items, n_img, clip_bbox_utm, target_crs,
   out_path
 }
 
+# ── Cropland mask alignment ──────────────────────────────────────────────────
+
+#' Align the cropland mask onto a dNBR tile's grid.
+#'
+#' FIX 2026-09: the mask is built once in CFG$target_crs (32644 for UP), but
+#' dNBR tiles keep their NATIVE MGRS zone — 43* is 32643, 45* is 32645. The
+#' old code called resample() alone, which matches grids but does NOT
+#' reproject, so:
+#'   zone 43 — numeric eastings overlap, so the mask was sampled ~380 km from
+#'             the true location. Mostly 0, so `dnbr[crop_mask == 0L] <- NA`
+#'             wiped the tile. 43RGP came out with 10 valid pixels.
+#'   zone 45 — no numeric overlap, so the mask returned all NA. `NA == 0L` is
+#'             NA, not TRUE, so NOTHING was masked and those tiles were never
+#'             cropland-filtered at all — a silent failure that looks like
+#'             success.
+#'   zone 44 — correct, which is why only the middle of the state worked.
+#'
+#' project() when the CRS differs, resample() only when it matches. The mask
+#' is cropped to the target footprint in its own CRS first so a tile-sized
+#' window is reprojected rather than the whole state.
+align_crop_mask <- function(crop_mask, dnbr, tile_id = NA_character_,
+                            date_str = NA_character_) {
+  if (!same.crs(crop_mask, dnbr)) {
+    tgt <- project(as.polygons(ext(dnbr), crs = crs(dnbr)), crs(crop_mask))
+
+    # terra 1.9.34: intersect() on two SpatExtents returns an object crop()
+    # rejects with "cannot get a SpatExtent from y". Compute the overlap
+    # explicitly and rebuild the extent from four numbers.
+    e <- ext(crop_mask); t <- ext(tgt)
+    xmin <- max(e$xmin, t$xmin); xmax <- min(e$xmax, t$xmax)
+    ymin <- max(e$ymin, t$ymin); ymax <- min(e$ymax, t$ymax)
+    if (xmax <= xmin || ymax <= ymin) {
+      log_warn("  {date_str} tile {tile_id}: cropland mask does not cover this tile")
+      return(NULL)
+    }
+
+    crop_mask <- project(crop(crop_mask, ext(xmin, xmax, ymin, ymax)),
+                         dnbr, method = "near")
+  } else if (!compareGeom(crop_mask, dnbr, stopOnError = FALSE)) {
+    crop_mask <- resample(crop_mask, dnbr, method = "near")
+  }
+
+  # Outside the mask footprint is outside the AOI, i.e. not cropland. Leaving
+  # these as NA is what let zone 45 through unmasked.
+  crop_mask[is.na(crop_mask)] <- 0L
+  crop_mask
+}
+
 # ── Per-date dNBR + mask (single pass) ───────────────────────────────────────
 
 #' Stream one post-fire S2 acquisition, compute dNBR, apply cropland mask,
 #' classify severity — all in a single raster pass before writing to disk.
+#' Returns a list(status=, path=, date=, observed=) rather than a bare path.
+#'
+#' FIX 2026-09 (a): the gap check now runs AFTER the scene has been shown to
+#' be usable, not before. Previously a scene could be rejected on gap grounds
+#' without ever being examined, and the caller then had no way to know whether
+#' it was observable.
+#'
+#' FIX 2026-09 (b): `observed` tells the caller whether this acquisition was a
+#' usable observation of the ground, independently of whether a dNBR was
+#' written. The caller re-anchors its gap clock on any observed date. Without
+#' that, one silent failure froze the clock and every later date failed the
+#' gap test against a stale anchor, terminating the series permanently — which
+#' is why western tiles stopped in mid-March with 24 of 28 scenes unused.
 process_postfire_date <- function(item, baseline_path, mask_path,
-                                   clip_bbox_utm, target_crs, out_dir,
+                                   clip_aoi_wkt, target_crs, out_dir,
                                    run_tag, tile_id, prev_date = NULL,
                                    token = NULL) {
   acq_date <- item$date
@@ -233,38 +330,51 @@ process_postfire_date <- function(item, baseline_path, mask_path,
   out_path <- file.path(out_dir,
     glue("{run_tag}_{date_str}_{tile_id}_dnbr.tif"))
 
-  if (file.exists(out_path)) {
-    log_debug("  [skip] {basename(out_path)}")
-    return(out_path)
-  }
+  res <- function(status, path = NULL, observed = FALSE)
+    list(status = status, path = path, date = acq_date, observed = observed)
 
-  # Gap check
-  if (!is.null(prev_date)) {
-    gap <- as.integer(acq_date - prev_date)
-    if (gap > CFG$max_gap_days) {
-      log_warn("  {date_str} tile {tile_id}: gap {gap}d > {CFG$max_gap_days}d — skipped")
-      return(NULL)
-    }
+  if (file.exists(out_path)) {
+    log_debug("  [cached] {basename(out_path)}")
+    return(res("cached", out_path, observed = TRUE))
   }
 
   raw_item <- sign_item(item$item, CFG$stac_source)
 
   scl <- stream_band_clipped(get_asset_url(raw_item, "SCL", CFG$stac_source),
-                              clip_bbox_utm, target_crs,
-                              scale = 1, bearer_token = token)
-  if (is.null(scl)) return(NULL)
+                              clip_aoi_wkt, scale = 1,
+                              bearer_token = token, tile_id = tile_id)
+  if (is.null(scl)) {
+    log_warn("  {date_str} tile {tile_id}: SCL unavailable — not observed")
+    return(res("stream_fail"))
+  }
 
   vfrac <- valid_frac_from_scl(scl)
+  if (!is.finite(vfrac)) {
+    log_warn("  {date_str} tile {tile_id}: valid_frac not computable — not observed")
+    return(res("stream_fail"))
+  }
   if (vfrac < CFG$min_valid_frac) {
     log_warn("  {date_str} tile {tile_id}: valid_frac={round(vfrac,2)} — too cloudy")
-    return(NULL)
+    return(res("too_cloudy"))
+  }
+
+  # Usable observation. Re-anchor the gap clock even if no dNBR is written.
+  if (!is.null(prev_date)) {
+    gap <- as.integer(acq_date - prev_date)
+    if (gap > CFG$max_gap_days) {
+      log_warn("  {date_str} tile {tile_id}: gap {gap}d > {CFG$max_gap_days}d — no dNBR, re-anchoring")
+      return(res("skipped_gap", observed = TRUE))
+    }
   }
 
   b8a <- stream_band_clipped(get_asset_url(raw_item, "B8A", CFG$stac_source),
-                              clip_bbox_utm, target_crs, bearer_token = token)
+                              clip_aoi_wkt, bearer_token = token, tile_id = tile_id)
   b12 <- stream_band_clipped(get_asset_url(raw_item, "B12", CFG$stac_source),
-                              clip_bbox_utm, target_crs, bearer_token = token)
-  if (is.null(b8a) || is.null(b12)) return(NULL)
+                              clip_aoi_wkt, bearer_token = token, tile_id = tile_id)
+  if (is.null(b8a) || is.null(b12)) {
+    log_warn("  {date_str} tile {tile_id}: B8A/B12 unavailable after valid SCL")
+    return(res("stream_fail", observed = TRUE))
+  }
 
   b12 <- resample(b12, b8a, method = "bilinear")
   scl <- resample(scl, b8a, method = "near")
@@ -280,10 +390,14 @@ process_postfire_date <- function(item, baseline_path, mask_path,
   severity <- classify_severity(dnbr)
 
   # ── Apply cropland mask in same pass ───────────────────────────────────────
-  crop_mask <- rast(mask_path)
-  if (!compareGeom(crop_mask, dnbr, stopOnError = FALSE))
-    crop_mask <- resample(crop_mask, dnbr, method = "near")
-  crop_mask <- crop(crop_mask, dnbr)
+  crop_mask <- align_crop_mask(rast(mask_path), dnbr, tile_id, date_str)
+  if (is.null(crop_mask)) return(res("mask_miss", observed = TRUE))
+
+  n_crop <- global(crop_mask, "sum", na.rm = TRUE)[1, 1]
+  if (!is.finite(n_crop) || n_crop == 0) {
+    log_warn("  {date_str} tile {tile_id}: no cropland pixels after mask alignment")
+    return(res("mask_empty", observed = TRUE))
+  }
 
   dnbr[crop_mask == 0L]     <- NA
   severity[crop_mask == 0L] <- NA
@@ -298,14 +412,15 @@ process_postfire_date <- function(item, baseline_path, mask_path,
               overwrite = TRUE)
   log_info(paste0("  → ", basename(out_path), " | valid:", round(vfrac*100), "% | burned:", sum(values(dnbr) >= CFG$dnbr_burn_min, na.rm=TRUE), " px"))
   gcs_push(out_path, cfg = CFG, subdir = "dnbr")  # FIX B1: pass cfg
-  out_path
+  res("written", out_path, observed = TRUE)
 }
 
 # ── Tile-level worker (runs inside furrr future) ──────────────────────────────
 
 process_tile <- function(tile_id, baseline_items, postfire_items,
-                          clip_bbox_utm, target_crs, mask_path,
-                          dnbr_dir, baseline_dir, run_tag, cfg) {
+                          clip_aoi_wkt, target_crs, mask_path,
+                          dnbr_dir, baseline_dir, run_tag, cfg,
+                          tile_log_dir = NULL) {
 
   # Re-source config and credentials inside worker (futures have clean envs)
   CFG <<- cfg
@@ -320,6 +435,15 @@ process_tile <- function(tile_id, baseline_items, postfire_items,
   .wtmp <- file.path(Sys.getenv("PIPELINE_ROOT"), CFG$dir_tmp,
                      paste0("worker_", Sys.getpid()))
   dir.create(.wtmp, showWarnings = FALSE, recursive = TRUE)
+
+  # FIX 2026-09: give every tile its own log file. Warnings raised inside a
+  # furrr worker are not reliably relayed to the master's appender, which is
+  # how 24 of 28 scenes on 43RFP were dropped with nothing in the run log.
+  if (!is.null(tile_log_dir)) {
+    dir.create(tile_log_dir, showWarnings = FALSE, recursive = TRUE)
+    log_appender(appender_file(file.path(tile_log_dir, paste0(tile_id, ".log"))))
+    log_threshold(INFO)
+  }
   terraOptions(memmax = CFG$terra_mem_gb, tempdir = .wtmp,
     todisk = CFG$terra_todisk, progress = 0)
   on.exit(try(terra::tmpFiles(current = TRUE, remove = TRUE), silent = TRUE),
@@ -353,7 +477,7 @@ process_tile <- function(tile_id, baseline_items, postfire_items,
 
   # Build baseline
   baseline_path <- tryCatch(
-    build_tile_baseline(b_items, CFG$baseline_n_img, clip_bbox_utm,
+    build_tile_baseline(b_items, CFG$baseline_n_img, clip_aoi_wkt,
                         target_crs, token, baseline_dir, run_tag, tile_id),
     error = function(e) { log_error("[tile {tile_id}] baseline failed: {e$message}"); NULL }
   )
@@ -364,24 +488,47 @@ process_tile <- function(tile_id, baseline_items, postfire_items,
   prev_date      <- NULL
   outputs        <- list()
 
+  tally <- c(written = 0L, cached = 0L, too_cloudy = 0L,
+             skipped_gap = 0L, stream_fail = 0L,
+             mask_miss = 0L, mask_empty = 0L, error = 0L)
+
   for (item in p_items_sorted) {
     # FIX B3 continued: refresh token before each acquisition.
     # Cheap when cached (60s safety margin); only re-fetches near expiry.
     token <- refresh_token()
 
-    path <- tryCatch(
+    r <- tryCatch(
       process_postfire_date(item, baseline_path, mask_path,
-                            clip_bbox_utm, target_crs, dnbr_dir,
+                            clip_aoi_wkt, target_crs, dnbr_dir,
                             run_tag, tile_id, prev_date, token),
-      error = function(e) { log_error("  [tile {tile_id} {item$date}] {e$message}"); NULL }
+      error = function(e) {
+        log_error("  [tile {tile_id} {item$date}] {e$message}")
+        list(status = "error", path = NULL, date = item$date, observed = FALSE)
+      }
     )
-    if (!is.null(path)) {
+
+    tally[r$status] <- tally[r$status] + 1L
+
+    if (!is.null(r$path)) {
       outputs[[length(outputs) + 1]] <- list(
-        path = path, date = item$date, tile_id = tile_id
+        path = r$path, date = item$date, tile_id = tile_id
       )
-      prev_date <- item$date
     }
+
+    # FIX 2026-09: advance the gap anchor on any OBSERVED date, not only on
+    # dates that produced a dNBR. The old code advanced prev_date only when a
+    # path came back, so a single failure froze the anchor and every later
+    # date failed the gap test against it — the series ended permanently.
+    if (isTRUE(r$observed)) prev_date <- r$date
   }
+
+  log_info("[tile {tile_id}] {length(p_items_sorted)} scene(s): ",
+           "written={tally[['written']]} cached={tally[['cached']]} ",
+           "cloudy={tally[['too_cloudy']]} gap={tally[['skipped_gap']]} ",
+           "streamfail={tally[['stream_fail']]} maskmiss={tally[['mask_miss']]} ",
+           "maskempty={tally[['mask_empty']]} error={tally[['error']]}")
+
+  attr(outputs, "tally") <- tally
   outputs
 }
 
@@ -416,14 +563,25 @@ run_compute_dnbr <- function(root_dir, cfg = NULL) {
   aoi_sf   <- st_read(shp_path, layer = CFG$gpkg_lyr_dist, quiet = TRUE) |>
               st_make_valid() |> st_union() |> st_buffer(CFG$aoi_buffer_deg)
 
-  aoi_utm       <- st_transform(aoi_sf, CFG$target_crs)
-  clip_bbox_utm <- st_bbox(aoi_utm)
-  bbox_wgs84    <- as.numeric(st_bbox(st_transform(aoi_sf, 4326)))
+  # FIX 2026-09: carry the AOI as a 4326 polygon (WKT, so it crosses the
+  # furrr process boundary as plain text). Each tile derives its own clip
+  # window from this in its own native CRS — see stream_band_clipped().
+  aoi_ll       <- st_transform(aoi_sf, 4326)
+  clip_aoi_wkt <- st_as_text(st_geometry(aoi_ll)[[1]])
+  bbox_wgs84   <- as.numeric(st_bbox(aoi_ll))
 
   # Get an initial CDSE token in the master process for STAC searches.
   # Workers will fetch their own tokens when they start.
+  # FIX 2026-09: a missing CDSE credential is fatal, not a warning. The old
+  # code warned, returned NULL, and proceeded to make unauthenticated
+  # requests — which surfaced as an unrelated HTTP 400 about response size
+  # rather than "you have no token".
   token <- if (CFG$stac_source == "CDSE") {
-    tryCatch(get_cdse_token(), error = function(e) { log_warn(e$message); NULL })
+    tk <- tryCatch(get_cdse_token(), error = function(e) { log_error(e$message); NULL })
+    if (is.null(tk))
+      stop("CDSE selected but no token could be obtained. Set CDSE_CLIENT_ID ",
+           "and CDSE_CLIENT_SECRET in ~/.Renviron, or run with --stac=MPC.")
+    tk
   } else NULL
   set_gdal_streaming_env(token)
 
@@ -475,19 +633,49 @@ run_compute_dnbr <- function(root_dir, cfg = NULL) {
       tile_id        = .x,
       baseline_items = baseline_by_tile,
       postfire_items = postfire_by_tile,
-      clip_bbox_utm  = clip_bbox_utm,
+      clip_aoi_wkt   = clip_aoi_wkt,
       target_crs     = CFG$target_crs,
       mask_path      = mask_path,
       dnbr_dir       = file.path(root_dir, CFG$dir_dnbr),
       baseline_dir   = file.path(root_dir, CFG$dir_baselines),
       run_tag        = CFG$run_tag,
-      cfg            = CFG
+      cfg            = CFG,
+      tile_log_dir   = file.path(root_dir, CFG$dir_logs, "step02_tiles")
     ),
     .options = furrr_options(seed = TRUE, packages = c("terra","rstac","sf",
                                                         "lubridate","glue","logger","fs"))
   )
 
   all_outputs <- unlist(results_nested, recursive = FALSE)
+
+  # FIX 2026-09: report per-tile scene accounting up front. Tiles that
+  # produced far fewer dNBRs than they had scenes are the signature of the
+  # failure modes fixed in this commit; surfacing them beats inferring the
+  # problem later from raster dimensions.
+  tallies <- do.call(rbind, lapply(seq_along(all_tiles), function(i) {
+    tl <- attr(results_nested[[i]], "tally")
+    if (is.null(tl)) return(NULL)
+    data.frame(tile_id = all_tiles[i],
+               scenes  = length(postfire_by_tile[[all_tiles[i]]]) %||% 0L,
+               t(as.data.frame(tl)), row.names = NULL)
+  }))
+
+  if (!is.null(tallies)) {
+    tallies$used_pct <- round(100 * (tallies$written + tallies$cached) /
+                              pmax(tallies$scenes, 1L))
+    thin <- tallies[tallies$used_pct < 50, ]
+    log_info("Scene usage: median {stats::median(tallies$used_pct)}% across {nrow(tallies)} tiles")
+    if (nrow(thin) > 0) {
+      log_warn("{nrow(thin)} tile(s) used under 50% of available scenes:")
+      for (j in seq_len(nrow(thin)))
+        log_warn("  {thin$tile_id[j]}: {thin$written[j]+thin$cached[j]}/{thin$scenes[j]} ({thin$used_pct[j]}%)")
+    }
+    utils::write.csv(tallies,
+      file.path(root_dir, CFG$dir_logs,
+                paste0(CFG$run_tag, "_02_tile_scene_usage.csv")),
+      row.names = FALSE)
+  }
+
   log_info("Step 02 complete. {length(all_outputs)} dNBR tiles produced.")
   invisible(all_outputs)
 }

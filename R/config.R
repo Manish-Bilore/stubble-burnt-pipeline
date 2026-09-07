@@ -32,7 +32,8 @@ build_config <- function(
     nrt             = FALSE,
     nrt_lookback    = 30L,
     nrt_baseline    = 45L,
-    stac_source     = "CDSE",
+    stac_source     = "MPC",   # MPC needs no credentials; CDSE requires
+                               # CDSE_CLIENT_ID/SECRET in ~/.Renviron
     max_cloud_pct   = 70L,
     dnbr_burn_min   = 0.10,
     n_workers       = 4L,

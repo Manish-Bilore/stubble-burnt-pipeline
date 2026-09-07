@@ -12,3 +12,10 @@ credentials/
 __pycache__/
 .Rhistory
 *.bak*
+
+# local run artefacts
+archive/
+*.patch
+*.bak
+.RData
+.Rhistory

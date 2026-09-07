@@ -113,8 +113,26 @@ build_cumulative <- function(date_tifs, dist_name, out_dir, run_tag,
   if (length(date_tifs) == 0) return(invisible(NULL))
   safe <- gsub("[^A-Za-z0-9_]", "_", toupper(dist_name))
 
-  # Initialise cumulative rasters from first available tile
-  ref        <- rast(date_tifs[1])[[1]]
+  # FIX 2026-09: the reference grid is the UNION of every date's extent, not
+  # date_tifs[1]. Each per-date clip is crop(mosaic, district, snap="out"),
+  # which returns the INTERSECTION of the district and that date's mosaic —
+  # so if the earliest date had partial tile coverage, the old code clipped
+  # every cumulative product to that partial footprint permanently. Kannauj
+  # Rabi came out 28,781 cells against a 5.2M-cell district; 13 of 75
+  # districts were affected, in both directions depending on season.
+  #
+  # extend() grows the first raster's grid outward to the union, so CRS,
+  # resolution and origin are preserved exactly and no resampling of the
+  # reference itself occurs.
+  r0  <- rast(date_tifs[1])[[1]]
+  u   <- ext(r0)
+  for (tif in date_tifs[-1]) u <- terra::union(u, ext(rast(tif)))
+  ref <- terra::extend(rast(r0), u)
+
+  if (length(date_tifs) > 1 && !identical(as.vector(ext(ref)), as.vector(ext(r0))))
+    log_info("[{dist_name}] reference grid extended beyond first date: ",
+             "{ncell(ref)} cells vs {ncell(r0)} in date_tifs[1]")
+
   first_doy  <- rast(ref); values(first_doy) <- NA_real_
   cum_count  <- rast(ref); values(cum_count)  <- 0L
   max_dnbr   <- rast(ref); values(max_dnbr)   <- NA_real_
@@ -123,7 +141,9 @@ build_cumulative <- function(date_tifs, dist_name, out_dir, run_tag,
     date_str  <- regmatches(basename(tif), regexpr("[0-9]{8}(?=_dnbr)", basename(tif), perl=TRUE))
     doy       <- yday(as.Date(date_str, "%Y%m%d"))
     dnbr      <- rast(tif)[[1]]
-    if (!compareGeom(dnbr, ref, stopOnError=FALSE)) dnbr <- resample(dnbr, ref, method="bilinear")
+    # near, not bilinear: dNBR is a derived index and bilinear smears real
+    # values across a grid mismatch, inventing intermediate severities.
+    if (!compareGeom(dnbr, ref, stopOnError=FALSE)) dnbr <- resample(dnbr, ref, method="near")
 
     is_burned  <- (!is.na(dnbr)) & (dnbr >= dnbr_burn_min)
     first_doy  <- ifel(is_burned & is.na(first_doy), doy, first_doy)
