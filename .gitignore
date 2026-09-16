@@ -19,3 +19,7 @@ archive/
 *.bak
 .RData
 .Rhistory
+
+rlibs/
+step0*.out
+data/
