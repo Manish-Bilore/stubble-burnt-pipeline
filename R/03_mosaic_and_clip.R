@@ -259,6 +259,11 @@ run_mosaic_and_clip <- function(root_dir, cfg = NULL) {
                          "BLOCKXSIZE=512", "BLOCKYSIZE=512"),
                 overwrite = TRUE)
     log_info("Mosaic {ds} → {basename(out_mp)}")
+    # Master-process terra scratch is never otherwise cleared: mosaic_date_tiles
+    # spills one spat_* per project() and per mosaic(), and 115 dates x 78 tiles
+    # filled a 334 GB disk at date 71. Drop the reference and reap orphans.
+    rm(m); gc()
+    terra::tmpFiles(orphan = TRUE, remove = TRUE)
     out_mp
   }))
   log_info("{length(mosaic_paths)} date mosaics ready")
@@ -281,6 +286,9 @@ run_mosaic_and_clip <- function(root_dir, cfg = NULL) {
   )
 
   total_tifs <- sum(vapply(dist_results, length, integer(1)))
+  # Date mosaics are intermediates only — every district has now read them.
+  unlink(mosaic_paths, force = TRUE)
+  terra::tmpFiles(orphan = TRUE, remove = TRUE)
   log_info("Step 03 complete. {total_tifs} district GeoTIFFs written.")
   invisible(dist_results)
 }

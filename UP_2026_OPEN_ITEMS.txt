@@ -1,8 +1,19 @@
-UP Rabi 2026 — status as of 2026-07-25
-- CSV: 75 districts, 70 populated, in GCS. 
-- Total 7.69 Mha = HARVEST-INFLATED detection, NOT burnt area (over-detection, v7 char gate needed).
-- 5 districts show 0 despite tiles present in interim/dnbr (43RGP/43RGN/43RFP/43RGM/44RKP/44RKQ exist):
-  AURAIYA, BAREILLY, FARRUKHABAD, RAMPUR, SHAHJAHANPUR
-  -> NOT a data gap. Mosaic-clip returns valid_px=0 over their footprints. 
-  -> Investigate: projection/extent mismatch or mosaic-date coverage. Fresh session.
-- BASTI recovered (187k ha). SAHARANPUR edge-sliver only (0.96 ha).
+UP Rabi 2026 — status as of 2026-09-15 (rebuilt on stubble-burnt-vm-v3)
+
+RESOLVED
+- 5 zero districts (AURAIYA, BAREILLY, FARRUKHABAD, RAMPUR, SHAHJAHANPUR)
+  now produce 25-28 dates each. Cause was the clip/mask-CRS defects fixed
+  in the 4-defect commit, not a data gap. Diagnosis in the July note was
+  correct; no further investigation needed.
+- 7 of 78 MGRS tiles have zero UP intersection (45RTP, 45RTN, 45RTM,
+  45RTH, 45QTG, 44RMU, 44RNU). Verified by st_intersection against
+  uttar_pradesh_admin.gpkg. The 0% / 38% scene-usage warnings for these
+  are correct behaviour, not defects.
+
+OPEN
+- Total 7.69 Mha (July figure) = HARVEST-INFLATED detection, NOT burnt
+  area. v7 char gate still needed. Re-check against the v3 step 04 output.
+- Tile list is derived from the STAC bbox, not the boundary polygon.
+  Filtering candidate MGRS footprints against the gpkg with a min-area
+  threshold (~5 km2) would drop the 7 tiles above and their streaming cost.
+- Step 03 mosaic phase is sequential (lapply, line 251) on an 8-core box.
