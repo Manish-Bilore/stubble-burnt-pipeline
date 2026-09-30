@@ -23,3 +23,7 @@ archive/
 rlibs/
 step0*.out
 data/
+*_batch.out
+pb_*.out
+kharif_*.out
+upload_*.out
