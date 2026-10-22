@@ -6,3 +6,6 @@ UP Rabi 2026 — status as of 2026-07-25
   -> NOT a data gap. Mosaic-clip returns valid_px=0 over their footprints. 
   -> Investigate: projection/extent mismatch or mosaic-date coverage. Fresh session.
 - BASTI recovered (187k ha). SAHARANPUR edge-sliver only (0.96 ha).
+
+Version 2 has 
+new values and diagnostics underway
